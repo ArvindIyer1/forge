@@ -1,32 +1,40 @@
 import { z } from "zod";
-
-const environmentSchema = z.object({
-  GEMINI_API_KEY: z.string().trim().min(1),
-  GEMINI_MODEL: z.string().trim().min(1),
-});
+import type { ProviderId } from "../providers/types.js";
 
 export interface AppConfig {
+  provider: ProviderId;
   apiKey: string;
   model: string;
 }
 
+const providerSchema = z.enum(["gemini", "groq"]);
+const requiredValue = z.string().trim().min(1);
+
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
-  const result = environmentSchema.safeParse(environment);
+  const providerValue = environment.MODEL_PROVIDER ?? "gemini";
+  const providerResult = providerSchema.safeParse(providerValue.trim());
 
-  if (!result.success) {
-    const missingVariables = result.error.issues
-      .map((issue) => issue.path[0])
-      .filter((name): name is string => typeof name === "string");
-    const uniqueNames = [...new Set(missingVariables)];
+  if (!providerResult.success) {
+    throw new Error('Invalid MODEL_PROVIDER. Choose "gemini" or "groq".');
+  }
 
+  const provider = providerResult.data;
+  const keyName = provider === "gemini" ? "GEMINI_API_KEY" : "GROQ_API_KEY";
+  const modelName = provider === "gemini" ? "GEMINI_MODEL" : "GROQ_MODEL";
+  const values = z
+    .object({ apiKey: requiredValue, model: requiredValue })
+    .safeParse({ apiKey: environment[keyName], model: environment[modelName] });
+
+  if (!values.success) {
+    const missingNames = values.error.issues.map((issue) =>
+      issue.path[0] === "apiKey" ? keyName : modelName,
+    );
+    const uniqueNames = [...new Set(missingNames)];
     throw new Error(
       `Missing required environment variable${uniqueNames.length === 1 ? "" : "s"}: ${uniqueNames.join(", ")}. ` +
-        "Add them to your .env file. See .env.example for the expected format.",
+        "Add the selected provider's settings to your .env file. See .env.example.",
     );
   }
 
-  return {
-    apiKey: result.data.GEMINI_API_KEY,
-    model: result.data.GEMINI_MODEL,
-  };
+  return { provider, ...values.data };
 }

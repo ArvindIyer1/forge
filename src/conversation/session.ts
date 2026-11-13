@@ -1,17 +1,35 @@
-import type { ChatProvider, StreamingChat } from "../providers/gemini.js";
+import type { ChatMessage, ModelProvider } from "../providers/types.js";
 
 export class ConversationSession {
-  private chat: StreamingChat;
+  private messages: ChatMessage[] = [];
 
-  constructor(private readonly provider: ChatProvider) {
-    this.chat = provider.createChat();
+  constructor(private readonly provider: ModelProvider) {}
+
+  get history(): readonly ChatMessage[] {
+    return this.messages.map((message) => ({ ...message }));
   }
 
-  sendMessageStream(message: string): AsyncIterable<string> {
-    return this.chat.sendMessageStream(message);
+  async *sendMessageStream(message: string): AsyncGenerator<string> {
+    this.messages.push({ role: "user", content: message });
+    let reply = "";
+    let completed = false;
+
+    try {
+      for await (const text of this.provider.stream(this.history)) {
+        reply += text;
+        yield text;
+      }
+
+      this.messages.push({ role: "assistant", content: reply });
+      completed = true;
+    } finally {
+      if (!completed) {
+        this.messages.pop();
+      }
+    }
   }
 
   clear(): void {
-    this.chat = this.provider.createChat();
+    this.messages = [];
   }
 }

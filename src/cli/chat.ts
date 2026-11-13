@@ -1,9 +1,7 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { ConversationSession } from "../conversation/session.js";
-import { formatGeminiError } from "../providers/gemini.js";
-import type { AppConfig } from "../config/env.js";
-import type { ChatProvider } from "../providers/gemini.js";
+import type { ModelProvider } from "../providers/types.js";
 
 interface TerminalOptions {
   input?: Readable;
@@ -11,8 +9,7 @@ interface TerminalOptions {
 }
 
 export async function startTerminalChat(
-  provider: ChatProvider,
-  config: AppConfig,
+  provider: ModelProvider,
   options: TerminalOptions = {},
 ): Promise<void> {
   const input = options.input ?? process.stdin;
@@ -27,7 +24,7 @@ export async function startTerminalChat(
     terminal.close();
   });
 
-  output.write("FORGE Gemini chat. Type /clear to reset or /exit to quit.\n");
+  output.write(`FORGE chat (${provider.id}/${provider.model}). Type /clear to reset or /exit to quit.\n`);
 
   try {
     for await (const line of terminal) {
@@ -55,7 +52,7 @@ export async function startTerminalChat(
         }
         output.write("\n");
       } catch (error) {
-        output.write(`\n${formatGeminiError(error, config)}\n`);
+        output.write(`\n${provider.formatError(error)}\n`);
       }
     }
   } finally {

@@ -2,15 +2,31 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/env.js";
 
 describe("loadConfig", () => {
-  it("reads the Gemini API key and model", () => {
-    expect(
-      loadConfig({ GEMINI_API_KEY: "test-key", GEMINI_MODEL: "test-model" }),
-    ).toEqual({ apiKey: "test-key", model: "test-model" });
+  it("defaults to Gemini and reads its settings", () => {
+    expect(loadConfig({ GEMINI_API_KEY: "gemini-test-key", GEMINI_MODEL: "gemini-model" })).toEqual({
+      provider: "gemini",
+      apiKey: "gemini-test-key",
+      model: "gemini-model",
+    });
   });
 
-  it("reports missing settings without exposing an API key", () => {
-    expect(() => loadConfig({ GEMINI_API_KEY: "", GEMINI_MODEL: undefined })).toThrow(
-      "GEMINI_API_KEY, GEMINI_MODEL",
-    );
+  it("loads only the selected provider's settings", () => {
+    expect(
+      loadConfig({
+        MODEL_PROVIDER: "groq",
+        GROQ_API_KEY: "groq-test-key",
+        GROQ_MODEL: "groq-model",
+      }),
+    ).toEqual({ provider: "groq", apiKey: "groq-test-key", model: "groq-model" });
+  });
+
+  it("rejects an unsupported provider", () => {
+    expect(() =>
+      loadConfig({ MODEL_PROVIDER: "other", GEMINI_API_KEY: "key", GEMINI_MODEL: "model" }),
+    ).toThrow('Invalid MODEL_PROVIDER. Choose "gemini" or "groq".');
+  });
+
+  it("reports a missing selected API key and model", () => {
+    expect(() => loadConfig({ MODEL_PROVIDER: "groq" })).toThrow("GROQ_API_KEY, GROQ_MODEL");
   });
 });

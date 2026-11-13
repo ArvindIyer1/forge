@@ -1,37 +1,47 @@
 import { GoogleGenAI } from "@google/genai";
 import type { AppConfig } from "../config/env.js";
+import { getErrorDetails, isNetworkError, redact } from "./error-utils.js";
+import type { ChatMessage, ModelProvider } from "./types.js";
 
-export interface StreamingChat {
-  sendMessageStream(message: string): AsyncIterable<string>;
-}
-
-export interface ChatProvider {
-  createChat(): StreamingChat;
-}
-
-export function createGeminiProvider(config: AppConfig): ChatProvider {
+export function createGeminiProvider(config: AppConfig): ModelProvider {
   const ai = new GoogleGenAI({ apiKey: config.apiKey });
 
   return {
-    createChat() {
-      const chat = ai.chats.create({ model: config.model });
+    id: "gemini",
+    model: config.model,
 
-      return {
-        async *sendMessageStream(message: string): AsyncGenerator<string> {
-          const response = await chat.sendMessageStream({ message });
+    async *stream(messages: readonly ChatMessage[]): AsyncGenerator<string> {
+      const systemText = messages
+        .filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n\n");
+      const contents = messages
+        .filter((message) => message.role !== "system")
+        .map((message) => ({
+          role: message.role === "assistant" ? "model" : "user",
+          parts: [{ text: message.content }],
+        }));
 
-          for await (const chunk of response) {
-            if (chunk.text) {
-              yield chunk.text;
-            }
-          }
-        },
-      };
+      const response = await ai.models.generateContentStream({
+        model: config.model,
+        contents,
+        ...(systemText ? { config: { systemInstruction: systemText } } : {}),
+      });
+
+      for await (const chunk of response) {
+        if (chunk.text) {
+          yield chunk.text;
+        }
+      }
+    },
+
+    formatError(error: unknown): string {
+      return formatGeminiError(error, config.model, config.apiKey);
     },
   };
 }
 
-export function formatGeminiError(error: unknown, config: AppConfig): string {
+function formatGeminiError(error: unknown, model: string, apiKey: string): string {
   const details = getErrorDetails(error);
   const message = details.message.toLowerCase();
 
@@ -56,44 +66,14 @@ export function formatGeminiError(error: unknown, config: AppConfig): string {
 
   if (
     (details.status === 400 || details.status === 404) &&
-    (message.includes("model") || message.includes(config.model.toLowerCase()))
+    (message.includes("model") || message.includes(model.toLowerCase()))
   ) {
-    return `Gemini could not use model "${config.model}". Check GEMINI_MODEL in your .env file.`;
+    return `Gemini could not use model "${model}". Check GEMINI_MODEL in your .env file.`;
   }
 
-  if (
-    details.code?.startsWith("ECONN") ||
-    details.code === "ENOTFOUND" ||
-    details.code === "ETIMEDOUT" ||
-    message.includes("fetch failed") ||
-    message.includes("network") ||
-    message.includes("timed out")
-  ) {
+  if (isNetworkError(details)) {
     return "Could not connect to Gemini. Check your internet connection and try again.";
   }
 
-  const safeMessage = details.message.split(config.apiKey).join("[redacted]");
-  return `Gemini request failed: ${safeMessage || "unknown error"}`;
-}
-
-function getErrorDetails(error: unknown): {
-  message: string;
-  status?: number;
-  code?: string;
-} {
-  if (typeof error !== "object" || error === null) {
-    return { message: String(error) };
-  }
-
-  const candidate = error as {
-    message?: unknown;
-    status?: unknown;
-    code?: unknown;
-  };
-
-  return {
-    message: typeof candidate.message === "string" ? candidate.message : String(error),
-    status: typeof candidate.status === "number" ? candidate.status : undefined,
-    code: typeof candidate.code === "string" ? candidate.code : undefined,
-  };
+  return `Gemini request failed: ${redact(details.message, apiKey)}`;
 }

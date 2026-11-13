@@ -1,13 +1,13 @@
 import "dotenv/config";
 import { loadConfig } from "./config/env.js";
 import { startTerminalChat } from "./cli/chat.js";
-import { createGeminiProvider } from "./providers/gemini.js";
+import { createProvider } from "./providers/factory.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const provider = createGeminiProvider(config);
+  const provider = createProvider(config);
 
-  await startTerminalChat(provider, config);
+  await startTerminalChat(provider);
 }
 
 main().catch((error: unknown) => {
