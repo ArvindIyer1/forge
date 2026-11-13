@@ -1,41 +1,50 @@
 # FORGE
 
-FORGE is a terminal chatbot that can use Gemini or Groq. Use Node.js 22 or later with pnpm.
+FORGE is a terminal coding agent built with TypeScript, Node.js, and pnpm. It supports Gemini and Groq and can inspect files in a configured workspace.
 
-## Provider abstraction
+Use Node.js 22 or later with pnpm.
 
-A provider abstraction gives the conversation code one shared interface for different model services. The `ModelProvider` interface reports the selected provider and model, accepts common `system`, `user`, and `assistant` messages, streams text, and formats provider errors. The conversation session owns message history and passes it to the provider for each response.
+## Set up a model provider
 
-Each adapter translates that shared interface into its provider's SDK format. The Gemini adapter maps assistant messages to Gemini's `model` role and system messages to its system instruction. The Groq adapter sends the shared roles as Groq chat messages. SDK-specific request and response types stay inside the adapters, so neither the CLI nor conversation session needs to know which SDK is active.
-
-To add another provider later, add its API key and model to configuration, implement `ModelProvider` in a new adapter, and register it in the provider factory. The terminal and conversation code can stay unchanged.
-
-## Configure Gemini and Groq
-
-1. Create a Gemini key in [Google AI Studio](https://aistudio.google.com/apikey) and/or a Groq key in the [Groq Console](https://console.groq.com/keys).
+1. Create an API key in [Google AI Studio](https://aistudio.google.com/apikey) and/or the [Groq Console](https://console.groq.com/keys).
 2. Copy `.env.example` to `.env`.
-3. Replace the key placeholders and model ID placeholders for the provider you want to use.
+3. Fill in the API key and model ID for the provider you plan to use.
 4. Set `MODEL_PROVIDER` to `gemini` or `groq`.
 
-Only the selected provider's key and model are required. `MODEL_PROVIDER` defaults to `gemini` if it is omitted. Keep `.env` private; Git ignores it.
+Only the selected provider's key and model are required. `MODEL_PROVIDER` defaults to `gemini`. Keep `.env` private; Git ignores it.
 
-| Variable | Used when | Description |
-| --- | --- | --- |
-| `GEMINI_API_KEY` | `MODEL_PROVIDER=gemini` | Key from Google AI Studio |
-| `GEMINI_MODEL` | `MODEL_PROVIDER=gemini` | Gemini model ID |
-| `GROQ_API_KEY` | `MODEL_PROVIDER=groq` | Key from the Groq Console |
-| `GROQ_MODEL` | `MODEL_PROVIDER=groq` | Groq model ID |
-| `MODEL_PROVIDER` | Always | `gemini` or `groq` |
+| Variable | Description |
+| --- | --- |
+| `GEMINI_API_KEY` | Key from Google AI Studio |
+| `GEMINI_MODEL` | Gemini model ID |
+| `GROQ_API_KEY` | Key from the Groq Console |
+| `GROQ_MODEL` | Groq model ID |
+| `MODEL_PROVIDER` | `gemini` or `groq` |
+| `FORGE_WORKSPACE` | Workspace directory; defaults to the current directory |
+
+## Agent architecture
+
+The provider interface gives the agent one way to send shared conversation messages, tool definitions, and a cancellation signal. Each provider adapter translates those into the selected SDK's format and converts streamed text and tool calls back into common events. Provider SDK types stay in their adapters.
+
+The agent sends the current history and registered tools to the provider. It streams any response text, validates requested tool names and arguments, executes approved tools, adds their results to history, then asks the provider to continue. It stops when the model returns a normal answer, cancellation occurs, or a limit is reached: eight model iterations, twelve tool calls per task, and four calls in one model response.
+
+Tools are registered with a name, description, Zod argument schema, and implementation. The registry supplies JSON Schema descriptions to the model. The tool executor independently validates every model request with Zod before running it.
+
+The current tools are read-only:
+
+- `list_files` lists workspace files.
+- `read_file` reads a UTF-8 text file.
+- `search_files` searches literal text in workspace files.
+
+Workspace tools reject traversal and symbolic links, omit common secret files and generated directories, and apply file, scan, depth, and result limits. They do not write files or run shell commands.
 
 ## Run FORGE
-
-Install dependencies and start the chat:
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-Enter messages and press Enter. Responses stream into the terminal. Use `/clear` to start a fresh conversation, `/exit` to quit, or Ctrl+C to stop. To build and run the compiled version, use `pnpm build` followed by `pnpm start`.
+Enter a task and press Enter. Use `/clear` to reset the conversation, `/exit` to quit, or Ctrl+C to cancel the current task and exit. Run `pnpm build` and then `pnpm start` to use the compiled build.
 
-Automated tests use mocked provider responses and do not contact either API.
+Automated tests use mocked provider responses and temporary workspaces; they do not contact Gemini or Groq.

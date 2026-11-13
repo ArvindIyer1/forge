@@ -1,32 +1,18 @@
-import type { ChatMessage, ModelProvider } from "../providers/types.js";
+import type { ChatMessage } from "../providers/types.js";
 
 export class ConversationSession {
   private messages: ChatMessage[] = [];
 
-  constructor(private readonly provider: ModelProvider) {}
-
   get history(): readonly ChatMessage[] {
-    return this.messages.map((message) => ({ ...message }));
+    return this.messages.map((message) => structuredClone(message));
   }
 
-  async *sendMessageStream(message: string): AsyncGenerator<string> {
-    this.messages.push({ role: "user", content: message });
-    let reply = "";
-    let completed = false;
+  append(message: ChatMessage): void {
+    this.messages.push(structuredClone(message));
+  }
 
-    try {
-      for await (const text of this.provider.stream(this.history)) {
-        reply += text;
-        yield text;
-      }
-
-      this.messages.push({ role: "assistant", content: reply });
-      completed = true;
-    } finally {
-      if (!completed) {
-        this.messages.pop();
-      }
-    }
+  truncate(length: number): void {
+    this.messages.length = Math.max(0, Math.min(length, this.messages.length));
   }
 
   clear(): void {

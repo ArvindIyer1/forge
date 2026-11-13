@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import { ConversationSession } from "../conversation/session.js";
+import type { Agent } from "../agent/agent.js";
 import type { ModelProvider } from "../providers/types.js";
 
 interface TerminalOptions {
@@ -10,21 +10,23 @@ interface TerminalOptions {
 
 export async function startTerminalChat(
   provider: ModelProvider,
+  agent: Agent,
   options: TerminalOptions = {},
 ): Promise<void> {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const isTerminal = Boolean((input as Readable & { isTTY?: boolean }).isTTY);
   const terminal = createInterface({ input, output, terminal: isTerminal });
-  const session = new ConversationSession(provider);
+  let activeController: AbortController | undefined;
   let interrupted = false;
 
   terminal.on("SIGINT", () => {
     interrupted = true;
+    activeController?.abort(new Error("Cancelled by user."));
     terminal.close();
   });
 
-  output.write(`FORGE chat (${provider.id}/${provider.model}). Type /clear to reset or /exit to quit.\n`);
+  output.write(`FORGE agent (${provider.id}/${provider.model}). Type /clear to reset or /exit to quit.\n`);
 
   try {
     for await (const line of terminal) {
@@ -32,27 +34,40 @@ export async function startTerminalChat(
 
       const message = line.trim();
       if (!message) continue;
-
-      if (message === "/exit") {
-        break;
-      }
+      if (message === "/exit") break;
 
       if (message === "/clear") {
-        session.clear();
+        agent.clear();
         output.write("Conversation cleared.\n");
         continue;
       }
 
+      const controller = new AbortController();
+      activeController = controller;
       output.write("FORGE> ");
 
       try {
-        for await (const text of session.sendMessageStream(message)) {
-          if (interrupted) break;
-          output.write(text);
+        const result = await agent.runTask(
+          message,
+          {
+            onText: (text) => output.write(text),
+            onToolCall: (call) => output.write(`\n[calling ${call.name}]\n`),
+          },
+          controller.signal,
+        );
+        if (result.status === "iteration_limit") {
+          output.write("\nAgent stopped at its iteration limit. Try asking for a narrower task.\n");
+        } else {
+          output.write("\n");
         }
-        output.write("\n");
       } catch (error) {
-        output.write(`\n${provider.formatError(error)}\n`);
+        if (controller.signal.aborted) {
+          output.write("\nTurn cancelled.\n");
+        } else {
+          output.write(`\n${provider.formatError(error)}\n`);
+        }
+      } finally {
+        if (activeController === controller) activeController = undefined;
       }
     }
   } finally {

@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config/env.js";
 import { createProvider } from "../src/providers/factory.js";
-import { toGroqMessages } from "../src/providers/groq.js";
-import type { ChatMessage } from "../src/providers/types.js";
+import type { ChatMessage, ToolDefinition } from "../src/providers/types.js";
 
 const sdkMocks = vi.hoisted(() => ({
   geminiStream: vi.fn(),
@@ -25,7 +24,16 @@ const config = (provider: "gemini" | "groq"): AppConfig => ({
   provider,
   apiKey: `${provider}-secret-key`,
   model: `${provider}-test-model`,
+  workspaceRoot: "/tmp/forge-test",
 });
+
+const fileTools: ToolDefinition[] = [
+  {
+    name: "read_file",
+    description: "Read a workspace file.",
+    parameters: { type: "object", properties: { path: { type: "string" } } },
+  },
+];
 
 async function* chunks<T>(values: T[]): AsyncGenerator<T> {
   for (const value of values) yield value;
@@ -44,73 +52,181 @@ describe("provider adapters", () => {
     expect([groq.id, groq.model]).toEqual(["groq", "groq-test-model"]);
   });
 
-  it("converts common messages to Gemini roles and streams mocked text", async () => {
+  it("maps Gemini function calls and streams mocked text", async () => {
     sdkMocks.geminiStream.mockResolvedValue(
-      chunks([{ text: "first " }, { text: "reply" }]),
+      chunks([
+        { text: "Looking. " },
+        {
+          text: "",
+          candidates: [{ content: { parts: [{ functionCall: { id: "g-call-1", name: "read_file", args: { path: "README.md" } }, thoughtSignature: "opaque-signature" }] } }],
+        },
+      ]),
     );
     const provider = createProvider(config("gemini"));
     const messages: ChatMessage[] = [
-      { role: "system", content: "Be concise." },
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hi" },
-      { role: "user", content: "Again" },
+      { role: "system", content: "Read-only assistant." },
+      { role: "user", content: "Read README" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "prior-call", providerCallId: "prior-provider-call", providerMetadata: { thoughtSignature: "prior-signature" }, name: "read_file", arguments: { path: "README.md" } }],
+      },
+      {
+        role: "tool",
+        toolCallId: "prior-call",
+        providerCallId: "prior-provider-call",
+        name: "read_file",
+        content: "{\"ok\":true,\"result\":{\"content\":\"hello\"}}",
+      },
+      { role: "user", content: "Summarize it" },
     ];
-    const reply: string[] = [];
+    const events = [];
+    for await (const event of provider.streamTurn(messages, fileTools)) events.push(event);
 
-    for await (const part of provider.stream(messages)) reply.push(part);
-
-    expect(reply.join("")).toBe("first reply");
+    expect(events).toEqual([
+      { type: "text_delta", text: "Looking. " },
+      {
+        type: "turn_complete",
+        toolCalls: [{ id: "g-call-1", providerCallId: "g-call-1", providerMetadata: { thoughtSignature: "opaque-signature" }, name: "read_file", arguments: { path: "README.md" } }],
+      },
+    ]);
     expect(sdkMocks.geminiStream).toHaveBeenCalledWith({
       model: "gemini-test-model",
       contents: [
-        { role: "user", parts: [{ text: "Hello" }] },
-        { role: "model", parts: [{ text: "Hi" }] },
-        { role: "user", parts: [{ text: "Again" }] },
+        { role: "user", parts: [{ text: "Read README" }] },
+        {
+          role: "model",
+          parts: [
+            {
+              functionCall: {
+                id: "prior-provider-call",
+                name: "read_file",
+                args: { path: "README.md" },
+                thoughtSignature: "prior-signature",
+              },
+            },
+          ],
+        },
+        {
+          role: "user",
+          parts: [
+            {
+              functionResponse: {
+                id: "prior-provider-call",
+                name: "read_file",
+                response: { result: { ok: true, result: { content: "hello" } } },
+              },
+            },
+          ],
+        },
+        { role: "user", parts: [{ text: "Summarize it" }] },
       ],
-      config: { systemInstruction: "Be concise." },
+      config: {
+        systemInstruction: "Read-only assistant.",
+        tools: [
+          {
+            functionDeclarations: [
+              {
+                name: "read_file",
+                description: "Read a workspace file.",
+                parametersJsonSchema: fileTools[0].parameters,
+              },
+            ],
+          },
+        ],
+      },
     });
   });
 
-  it("preserves common roles in Groq messages and streams mocked text", async () => {
+  it("assembles Groq streamed argument fragments and maps the tool request", async () => {
     sdkMocks.groqStream.mockResolvedValue(
       chunks([
-        { choices: [{ delta: { content: "groq " } }] },
-        { choices: [{ delta: { content: "reply" } }] },
+        {
+          choices: [
+            {
+              delta: {
+                content: "Checking. ",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "groq-call-1",
+                    function: { name: "read_file", arguments: '{"path":' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [{ index: 0, function: { arguments: '"README.md"}' } }],
+              },
+            },
+          ],
+        },
       ]),
     );
     const provider = createProvider(config("groq"));
     const messages: ChatMessage[] = [
-      { role: "system", content: "Be concise." },
-      { role: "user", content: "Hello" },
+      { role: "system", content: "Read-only assistant." },
+      { role: "user", content: "Read README" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "old-call", providerCallId: "old-call", name: "read_file", arguments: { path: "README.md" } }],
+      },
+      {
+        role: "tool",
+        toolCallId: "old-call",
+        providerCallId: "old-call",
+        name: "read_file",
+        content: "{\"ok\":true}",
+      },
     ];
-    const reply: string[] = [];
+    const events = [];
+    for await (const event of provider.streamTurn(messages, fileTools)) events.push(event);
 
-    for await (const part of provider.stream(messages)) reply.push(part);
-
-    expect(reply.join("")).toBe("groq reply");
-    expect(toGroqMessages(messages)).toEqual(messages);
-    expect(sdkMocks.groqStream).toHaveBeenCalledWith({
-      model: "groq-test-model",
-      messages,
-      stream: true,
-    });
+    expect(events).toEqual([
+      { type: "text_delta", text: "Checking. " },
+      {
+        type: "turn_complete",
+        toolCalls: [
+          { id: "groq-call-1", providerCallId: "groq-call-1", name: "read_file", arguments: { path: "README.md" } },
+        ],
+      },
+    ]);
+    expect(sdkMocks.groqStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "groq-test-model",
+        stream: true,
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read_file",
+              description: "Read a workspace file.",
+              parameters: fileTools[0].parameters,
+            },
+          },
+        ],
+        messages: expect.arrayContaining([
+          { role: "assistant", content: null, tool_calls: [expect.objectContaining({ id: "old-call" })] },
+          { role: "tool", tool_call_id: "old-call", content: "{\"ok\":true}" },
+        ]),
+      }),
+      undefined,
+    );
   });
 
-  it("gives useful provider errors without exposing the API key", () => {
+  it("formats authentication, quota, network, and secret-safe provider errors", () => {
     const groq = createProvider(config("groq"));
     const gemini = createProvider(config("gemini"));
 
-    expect(groq.formatError({ status: 401, message: "invalid api key" })).toContain(
-      "Check GROQ_API_KEY",
-    );
-    expect(groq.formatError({ status: 429, message: "rate limit reached" })).toContain(
-      "quota or rate limit",
-    );
-    expect(groq.formatError({ code: "ENOTFOUND", message: "network unavailable" })).toContain(
-      "internet connection",
-    );
-    expect(gemini.formatError({ status: 401, message: "gemini-secret-key invalid" })).not.toContain(
-      "gemini-secret-key",
-    );
+    expect(groq.formatError({ status: 401, message: "invalid api key" })).toContain("GROQ_API_KEY");
+    expect(groq.formatError({ status: 429, message: "rate limit reached" })).toContain("quota or rate limit");
+    expect(groq.formatError({ code: "ENOTFOUND", message: "network unavailable" })).toContain("internet connection");
+    expect(gemini.formatError({ status: 401, message: "gemini-secret-key invalid" })).not.toContain("gemini-secret-key");
   });
 });

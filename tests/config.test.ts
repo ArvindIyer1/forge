@@ -3,10 +3,17 @@ import { loadConfig } from "../src/config/env.js";
 
 describe("loadConfig", () => {
   it("defaults to Gemini and reads its settings", () => {
-    expect(loadConfig({ GEMINI_API_KEY: "gemini-test-key", GEMINI_MODEL: "gemini-model" })).toEqual({
+    expect(
+      loadConfig({
+        GEMINI_API_KEY: "gemini-test-key",
+        GEMINI_MODEL: "gemini-model",
+        FORGE_WORKSPACE: "/tmp/forge-workspace",
+      }),
+    ).toEqual({
       provider: "gemini",
       apiKey: "gemini-test-key",
       model: "gemini-model",
+      workspaceRoot: "/tmp/forge-workspace",
     });
   });
 
@@ -16,8 +23,9 @@ describe("loadConfig", () => {
         MODEL_PROVIDER: "groq",
         GROQ_API_KEY: "groq-test-key",
         GROQ_MODEL: "groq-model",
+        FORGE_WORKSPACE: ".",
       }),
-    ).toEqual({ provider: "groq", apiKey: "groq-test-key", model: "groq-model" });
+    ).toMatchObject({ provider: "groq", apiKey: "groq-test-key", model: "groq-model" });
   });
 
   it("rejects an unsupported provider", () => {

@@ -1,10 +1,12 @@
 import { z } from "zod";
+import { resolve } from "node:path";
 import type { ProviderId } from "../providers/types.js";
 
 export interface AppConfig {
   provider: ProviderId;
   apiKey: string;
   model: string;
+  workspaceRoot: string;
 }
 
 const providerSchema = z.enum(["gemini", "groq"]);
@@ -36,5 +38,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     );
   }
 
-  return { provider, ...values.data };
+  const workspace = z.string().trim().min(1).safeParse(environment.FORGE_WORKSPACE ?? process.cwd());
+  if (!workspace.success) {
+    throw new Error("FORGE_WORKSPACE must be a non-empty directory path.");
+  }
+
+  return { provider, ...values.data, workspaceRoot: resolve(workspace.data) };
 }
