@@ -7,6 +7,7 @@ import { Agent } from "../src/agent/agent.js";
 import type { ChatMessage, ModelProvider, ProviderEvent, ToolCall } from "../src/providers/types.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Workspace } from "../src/tools/workspace.js";
+import { writeFileTool } from "../src/tools/write-file.js";
 
 const temporaryRoots: string[] = [];
 
@@ -222,5 +223,113 @@ describe("Agent loop", () => {
     expect(agent.history).toHaveLength(1);
     expect(agent.history[0].role).toBe("system");
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it("returns a rejected approval to the model without creating the file", async () => {
+    const workspace = await makeWorkspace();
+    const registry = new ToolRegistry();
+    registry.register(writeFileTool);
+    const provider = new FakeProvider([
+      [{ type: "turn_complete", toolCalls: [{ id: "write-1", name: "write_file", arguments: { path: "new.txt", content: "content" } }] }],
+      [{ type: "text_delta", text: "I left it unchanged." }, { type: "turn_complete", toolCalls: [] }],
+    ]);
+    const agent = new Agent(provider, registry, { workspace });
+    let proposals = 0;
+
+    const result = await agent.runTask("Create a file", {
+      requestApproval: async (proposal) => {
+        proposals += 1;
+        expect(proposal.path).toBe("new.txt");
+        return "rejected";
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(proposals).toBe(1);
+    await expect(workspace.readTextFile("new.txt")).rejects.toThrow();
+    expect(provider.requests[1].messages.at(-1)).toMatchObject({
+      role: "tool",
+      content: JSON.stringify({ ok: true, result: { status: "rejected", path: "new.txt", operation: "create" } }),
+    });
+  });
+
+  it("does not accept model arguments as approval", async () => {
+    const workspace = await makeWorkspace();
+    const registry = new ToolRegistry();
+    registry.register(writeFileTool);
+    const provider = new FakeProvider([
+      [{ type: "turn_complete", toolCalls: [{ id: "write-1", name: "write_file", arguments: { path: "new.txt", content: "content", approved: true } }] }],
+      [{ type: "turn_complete", toolCalls: [] }],
+    ]);
+    const agent = new Agent(provider, registry, { workspace });
+    let approvalRequests = 0;
+
+    await agent.runTask("Create a file", {
+      requestApproval: async () => {
+        approvalRequests += 1;
+        return "approved";
+      },
+    });
+
+    expect(approvalRequests).toBe(0);
+    await expect(workspace.readTextFile("new.txt")).rejects.toThrow();
+    expect(provider.requests[1].messages.at(-1)?.content).toContain("Invalid arguments");
+  });
+
+  it("requests separate approval for each proposed operation in a model turn", async () => {
+    const workspace = await makeWorkspace();
+    const registry = new ToolRegistry();
+    registry.register(writeFileTool);
+    const provider = new FakeProvider([
+      [{
+        type: "turn_complete",
+        toolCalls: [
+          { id: "write-1", name: "write_file", arguments: { path: "one.txt", content: "one" } },
+          { id: "write-2", name: "write_file", arguments: { path: "two.txt", content: "two" } },
+        ],
+      }],
+      [{ type: "turn_complete", toolCalls: [] }],
+    ]);
+    const agent = new Agent(provider, registry, { workspace });
+    const approvedPaths: string[] = [];
+
+    await agent.runTask("Create two files", {
+      requestApproval: async (proposal) => {
+        approvedPaths.push(proposal.path);
+        return proposal.path === "one.txt" ? "approved" : "rejected";
+      },
+    });
+
+    expect(approvedPaths).toEqual(["one.txt", "two.txt"]);
+    expect(await workspace.readTextFile("one.txt")).toBe("one");
+    await expect(workspace.readTextFile("two.txt")).rejects.toThrow();
+  });
+
+  it("cancels a pending approval without applying or retaining the task", async () => {
+    const workspace = await makeWorkspace();
+    const registry = new ToolRegistry();
+    registry.register(writeFileTool);
+    const provider = new FakeProvider([
+      [{ type: "turn_complete", toolCalls: [{ id: "write-1", name: "write_file", arguments: { path: "new.txt", content: "content" } }] }],
+    ]);
+    const agent = new Agent(provider, registry, { workspace });
+    const controller = new AbortController();
+    let approvalStarted!: () => void;
+    const started = new Promise<void>((resolve) => { approvalStarted = resolve; });
+
+    const task = agent.runTask("Create a file", {
+      requestApproval: async (_proposal, signal) => {
+        approvalStarted();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    }, controller.signal);
+    await started;
+    controller.abort(new Error("Cancelled by test."));
+
+    await expect(task).rejects.toThrow("Cancelled by test");
+    await expect(workspace.readTextFile("new.txt")).rejects.toThrow();
+    expect(agent.history).toHaveLength(1);
   });
 });

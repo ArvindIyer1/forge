@@ -1,10 +1,17 @@
 import type { z } from "zod";
 import type { ToolDefinition } from "../providers/types.js";
 import type { Workspace } from "./workspace.js";
+import type { ProposedFileChange } from "./file-changes.js";
+
+export type ApprovalDecision = "approved" | "rejected";
 
 export interface ToolContext {
   workspace: Workspace;
   signal?: AbortSignal;
+  requestApproval?: (
+    proposal: ProposedFileChange,
+    signal?: AbortSignal,
+  ) => Promise<ApprovalDecision>;
 }
 
 export interface Tool<TArgs = unknown> {

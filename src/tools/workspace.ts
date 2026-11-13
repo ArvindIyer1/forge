@@ -10,6 +10,21 @@ export const MAX_SEARCH_FILES = 500;
 export const MAX_SEARCH_RESULTS = 100;
 export const MAX_DIRECTORY_DEPTH = 8;
 
+export interface WorkspaceFileSnapshot {
+  relativePath: string;
+  content: string;
+  size: number;
+  device: number;
+  inode: number;
+  modifiedAt: number;
+  mode: number;
+}
+
+export interface NewFileTarget {
+  relativePath: string;
+  absolutePath: string;
+}
+
 const ignoredDirectories = new Set(["node_modules", "dist", "coverage", ".git"]);
 
 export class Workspace {
@@ -46,7 +61,46 @@ export class Workspace {
     return canonicalPath;
   }
 
-  async readTextFile(relativePath: string, maxBytes = MAX_READ_BYTES): Promise<string> {
+  /** Validate a new file destination without creating or modifying anything. */
+  async resolveNewFileTarget(relativePath: string): Promise<NewFileTarget> {
+    const segments = normalizeSegments(relativePath);
+    if (segments.length === 0 || segments.some(isSensitiveSegment)) {
+      throw new Error("A safe workspace-relative file path is required.");
+    }
+
+    const fileName = segments.at(-1)!;
+    const parentSegments = segments.slice(0, -1);
+    const parentRelativePath = parentSegments.join("/") || ".";
+    const parentPath = await this.resolveExisting(parentRelativePath);
+    const parentInfo = await stat(parentPath);
+    if (!parentInfo.isDirectory()) throw new Error("The parent path is not a directory.");
+
+    const absolutePath = join(parentPath, fileName);
+    try {
+      await lstat(absolutePath);
+      throw new Error("write_file only creates new files and cannot overwrite an existing path.");
+    } catch (error) {
+      if (!isMissingPath(error)) throw error;
+    }
+
+    const normalizedPath = segments.join("/");
+    if (!isInside(this.root, absolutePath)) {
+      throw new Error("The requested path is outside the configured workspace.");
+    }
+    return { relativePath: normalizedPath, absolutePath };
+  }
+
+  async resolveExistingFileTarget(relativePath: string): Promise<NewFileTarget> {
+    const absolutePath = await this.resolveExisting(relativePath);
+    const info = await stat(absolutePath);
+    if (!info.isFile()) throw new Error("The requested path is not a regular file.");
+    return {
+      relativePath: toRelativePosix(this.root, absolutePath),
+      absolutePath,
+    };
+  }
+
+  async readTextSnapshot(relativePath: string, maxBytes = MAX_READ_BYTES): Promise<WorkspaceFileSnapshot> {
     const filePath = await this.resolveExisting(relativePath);
     const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
     const file = await open(filePath, flags);
@@ -54,26 +108,37 @@ export class Workspace {
     try {
       const info = await file.stat();
       if (!info.isFile()) throw new Error("The requested path is not a regular file.");
-      if (info.size > maxBytes) {
-        throw new Error(`File exceeds the ${maxBytes}-byte read limit.`);
-      }
+      if (info.size > maxBytes) throw new Error(`File exceeds the ${maxBytes}-byte read limit.`);
 
       const buffer = Buffer.alloc(maxBytes + 1);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > maxBytes) {
-        throw new Error(`File exceeds the ${maxBytes}-byte read limit.`);
-      }
-      const content = buffer.subarray(0, bytesRead);
-      if (content.includes(0)) throw new Error("Binary files cannot be read by workspace tools.");
+      if (bytesRead > maxBytes) throw new Error(`File exceeds the ${maxBytes}-byte read limit.`);
+      const contentBytes = buffer.subarray(0, bytesRead);
+      if (contentBytes.includes(0)) throw new Error("Binary files cannot be read by workspace tools.");
 
+      let content: string;
       try {
-        return new TextDecoder("utf-8", { fatal: true }).decode(content);
+        content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
       } catch {
         throw new Error("File is not valid UTF-8 text.");
       }
+
+      return {
+        relativePath: toRelativePosix(this.root, filePath),
+        content,
+        size: info.size,
+        device: info.dev,
+        inode: info.ino,
+        modifiedAt: info.mtimeMs,
+        mode: info.mode,
+      };
     } finally {
       await file.close();
     }
+  }
+
+  async readTextFile(relativePath: string, maxBytes = MAX_READ_BYTES): Promise<string> {
+    return (await this.readTextSnapshot(relativePath, maxBytes)).content;
   }
 
   async listFiles(

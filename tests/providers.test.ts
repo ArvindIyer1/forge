@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../src/config/env.js";
 import { createProvider } from "../src/providers/factory.js";
 import type { ChatMessage, ToolDefinition } from "../src/providers/types.js";
+import { createDefaultToolRegistry } from "../src/tools/create-default.js";
 
 const sdkMocks = vi.hoisted(() => ({
   geminiStream: vi.fn(),
@@ -228,5 +229,28 @@ describe("provider adapters", () => {
     expect(groq.formatError({ status: 429, message: "rate limit reached" })).toContain("quota or rate limit");
     expect(groq.formatError({ code: "ENOTFOUND", message: "network unavailable" })).toContain("internet connection");
     expect(gemini.formatError({ status: 401, message: "gemini-secret-key invalid" })).not.toContain("gemini-secret-key");
+  });
+
+  it("sends write and edit declarations through both provider adapters", async () => {
+    const definitions = createDefaultToolRegistry().definitions();
+    sdkMocks.geminiStream.mockResolvedValue(chunks([{ candidates: [{ content: { parts: [] } }] }]));
+    const gemini = createProvider(config("gemini"));
+    for await (const _event of gemini.streamTurn([{ role: "user", content: "Change a file" }], definitions)) {
+      // Consume the mocked response so the request is made.
+    }
+    const geminiRequest = sdkMocks.geminiStream.mock.calls[0][0];
+    const geminiNames = geminiRequest.config.tools[0].functionDeclarations.map((tool: { name: string }) => tool.name);
+    expect(geminiNames).toContain("write_file");
+    expect(geminiNames).toContain("edit_file");
+
+    sdkMocks.groqStream.mockResolvedValue(chunks([{ choices: [{ delta: {} }] }]));
+    const groq = createProvider(config("groq"));
+    for await (const _event of groq.streamTurn([{ role: "user", content: "Change a file" }], definitions)) {
+      // Consume the mocked response so the request is made.
+    }
+    const groqRequest = sdkMocks.groqStream.mock.calls[0][0];
+    const groqNames = groqRequest.tools.map((tool: { function: { name: string } }) => tool.function.name);
+    expect(groqNames).toContain("write_file");
+    expect(groqNames).toContain("edit_file");
   });
 });

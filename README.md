@@ -1,6 +1,6 @@
 # FORGE
 
-FORGE is a terminal coding agent built with TypeScript, Node.js, and pnpm. It supports Gemini and Groq and can inspect files in a configured workspace.
+FORGE is a terminal coding agent built with TypeScript, Node.js, and pnpm. It supports Gemini and Groq and can inspect and safely modify files in a configured workspace.
 
 Use Node.js 22 or later with pnpm.
 
@@ -30,13 +30,17 @@ The agent sends the current history and registered tools to the provider. It str
 
 Tools are registered with a name, description, Zod argument schema, and implementation. The registry supplies JSON Schema descriptions to the model. The tool executor independently validates every model request with Zod before running it.
 
-The current tools are read-only:
+The current workspace tools are:
 
 - `list_files` lists workspace files.
 - `read_file` reads a UTF-8 text file.
 - `search_files` searches literal text in workspace files.
+- `write_file` proposes creating a new file; it never overwrites an existing path.
+- `edit_file` proposes one exact text replacement and rejects ambiguous matches.
 
-Workspace tools reject traversal and symbolic links, omit common secret files and generated directories, and apply file, scan, depth, and result limits. They do not write files or run shell commands.
+Every create or edit displays a unified diff and requires explicit approval. Enter rejects; type `A` to approve or `R` to reject. Each change requires a separate decision. Ctrl+C cancels a pending approval. Rejected changes are returned to the model without modifying a file.
+
+Workspace tools reject traversal and symbolic links, protect common secret files and generated directories, and apply file, scan, depth, and result limits. New files require an existing parent directory. Edits require one unique exact match. Changes are revalidated after approval and staged through same-directory temporary files before atomic publication where supported. FORGE never runs shell commands.
 
 ## Run FORGE
 

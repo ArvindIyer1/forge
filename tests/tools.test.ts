@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -8,8 +8,11 @@ import { ToolExecutor } from "../src/tools/executor.js";
 import { createDefaultToolRegistry } from "../src/tools/create-default.js";
 import { listFilesTool } from "../src/tools/list-files.js";
 import { readFileTool } from "../src/tools/read-file.js";
+import { editFileTool } from "../src/tools/edit-file.js";
+import { prepareCreate, prepareEdit, applyFileChange } from "../src/tools/file-changes.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { searchFilesTool } from "../src/tools/search-files.js";
+import { writeFileTool } from "../src/tools/write-file.js";
 import { MAX_READ_BYTES, Workspace } from "../src/tools/workspace.js";
 
 const temporaryRoots: string[] = [];
@@ -29,14 +32,16 @@ function makeCall(name: string, args: unknown, id = "call-1"): ToolCall {
 }
 
 describe("tool registry and executor", () => {
-  it("registers the three read-only tools and produces provider-neutral definitions", () => {
+  it("registers all five tools and produces provider-neutral definitions", () => {
     const registry = createDefaultToolRegistry();
 
-    expect(registry.size).toBe(3);
+    expect(registry.size).toBe(5);
     expect(registry.definitions().map((definition) => definition.name)).toEqual([
       "list_files",
       "read_file",
       "search_files",
+      "write_file",
+      "edit_file",
     ]);
     expect(registry.definitions()[1].parameters).toMatchObject({ type: "object" });
   });
@@ -141,5 +146,93 @@ describe("workspace file tools", () => {
       { path: "src/two.ts", line: 1, preview: "The agent loop is bounded." },
     ]);
     await expect(readFileTool.execute({ path: ".env.local" }, { workspace })).rejects.toThrow("blocked");
+  });
+});
+
+describe("write and edit file tools", () => {
+  it("creates a new file but never overwrites an existing destination", async () => {
+    const workspace = await makeWorkspace();
+    const context = { workspace, requestApproval: async () => "approved" as const };
+    const created = await writeFileTool.execute({ path: "new.txt", content: "new content\n" }, context);
+    expect(created).toMatchObject({ operation: "create", path: "new.txt" });
+    expect(await workspace.readTextFile("new.txt")).toBe("new content\n");
+
+    await expect(writeFileTool.execute({ path: "new.txt", content: "replacement" }, context))
+      .rejects.toThrow("cannot overwrite");
+    expect(await workspace.readTextFile("new.txt")).toBe("new content\n");
+  });
+
+  it("requires existing parents, validates paths, and rejects protected or binary targets", async () => {
+    const workspace = await makeWorkspace();
+    await writeFile(join(workspace.root, ".env"), "secret");
+    await writeFile(join(workspace.root, "ordinary.txt"), "text");
+    await symlink(join(workspace.root, "ordinary.txt"), join(workspace.root, "alias.txt"));
+
+    const context = { workspace, requestApproval: async () => "approved" as const };
+    await expect(writeFileTool.execute({ path: "missing/new.txt", content: "x" }, context)).rejects.toThrow();
+    await expect(writeFileTool.execute({ path: "../escape.txt", content: "x" }, context)).rejects.toThrow("Path traversal");
+    await expect(writeFileTool.execute({ path: ".env", content: "x" }, context)).rejects.toThrow("safe workspace-relative");
+    await expect(editFileTool.execute({ path: ".env", old_text: "secret", new_text: "x" }, context)).rejects.toThrow("blocked");
+    await expect(editFileTool.execute({ path: "alias.txt", old_text: "text", new_text: "x" }, context)).rejects.toThrow("Symbolic links");
+    await expect(writeFileTool.execute({ path: "binary", content: "a\0b" }, context)).rejects.toThrow("Binary");
+    await expect(writeFileTool.execute({ path: "large", content: "x".repeat(MAX_READ_BYTES + 1) }, context)).rejects.toThrow();
+  });
+
+  it("edits one unique match and preserves the rest of the file", async () => {
+    const workspace = await makeWorkspace();
+    await writeFile(join(workspace.root, "code.ts"), "const old = 1;\nkeep this\n");
+
+    const result = await editFileTool.execute(
+      { path: "code.ts", old_text: "old = 1", new_text: "new = 2" },
+      { workspace, requestApproval: async () => "approved" as const },
+    );
+
+    expect(result).toMatchObject({ operation: "edit", path: "code.ts" });
+    expect(await workspace.readTextFile("code.ts")).toBe("const new = 2;\nkeep this\n");
+  });
+
+  it("preserves a UTF-8 byte order mark when editing text", async () => {
+    const workspace = await makeWorkspace();
+    await writeFile(join(workspace.root, "bom.txt"), Buffer.from("\uFEFFbefore and after", "utf8"));
+
+    await editFileTool.execute(
+      { path: "bom.txt", old_text: "before", new_text: "updated" },
+      { workspace, requestApproval: async () => "approved" },
+    );
+
+    expect(await workspace.readTextFile("bom.txt")).toBe("\uFEFFupdated and after");
+  });
+
+  it("does not publish stale proposals and cleans up temporary files", async () => {
+    const workspace = await makeWorkspace();
+    const create = await prepareCreate(workspace, "race.txt", "approved content");
+    const originalTarget = workspace.resolveNewFileTarget.bind(workspace);
+    let targetChecks = 0;
+    workspace.resolveNewFileTarget = async (path) => {
+      targetChecks += 1;
+      if (targetChecks === 4) await writeFile(join(workspace.root, "race.txt"), "created concurrently");
+      return originalTarget(path);
+    };
+
+    await expect(applyFileChange(workspace, create)).rejects.toThrow();
+    expect(await workspace.readTextFile("race.txt")).toBe("created concurrently");
+    expect((await readdir(workspace.root)).filter((name) => name.startsWith(".forge-") && name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("rejects an edit if the target changes while the replacement is being staged", async () => {
+    const workspace = await makeWorkspace();
+    await writeFile(join(workspace.root, "edit.txt"), "before");
+    const proposal = await prepareEdit(workspace, "edit.txt", "before", "after");
+    const originalSnapshot = workspace.readTextSnapshot.bind(workspace);
+    let snapshotReads = 0;
+    workspace.readTextSnapshot = async (...args) => {
+      snapshotReads += 1;
+      if (snapshotReads === 2) await writeFile(join(workspace.root, "edit.txt"), "concurrent edit");
+      return originalSnapshot(...args);
+    };
+
+    await expect(applyFileChange(workspace, proposal)).rejects.toThrow("changed after");
+    expect(await originalSnapshot("edit.txt").then((snapshot) => snapshot.content)).toBe("concurrent edit");
+    expect((await readdir(workspace.root)).filter((name) => name.startsWith(".forge-") && name.endsWith(".tmp"))).toEqual([]);
   });
 });
