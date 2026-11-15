@@ -32,16 +32,21 @@ function makeCall(name: string, args: unknown, id = "call-1"): ToolCall {
 }
 
 describe("tool registry and executor", () => {
-  it("registers all five tools and produces provider-neutral definitions", () => {
+  it("registers workspace and Git tools with provider-neutral definitions", () => {
     const registry = createDefaultToolRegistry();
 
-    expect(registry.size).toBe(5);
+    expect(registry.size).toBe(10);
     expect(registry.definitions().map((definition) => definition.name)).toEqual([
       "list_files",
       "read_file",
       "search_files",
       "write_file",
       "edit_file",
+      "git_status",
+      "git_diff",
+      "git_diff_staged",
+      "git_log",
+      "git_branch",
     ]);
     expect(registry.definitions()[1].parameters).toMatchObject({ type: "object" });
   });
