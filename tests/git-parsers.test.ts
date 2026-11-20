@@ -10,9 +10,27 @@ describe("Git output parsers", () => {
     expect(parsed.untracked).toEqual([]);
   });
 
+  it.each(["## ", "## main...", "## main [ahead nope]", "## main\0?? broken\0"]) (
+    "rejects malformed complete branch/status output %s",
+    (output) => {
+      const parsed = parseGitStatus({ stdout: Buffer.from(`${output}\0`, "utf8"), truncated: false });
+      expect(parsed.valid).toBe(false);
+      expect(parsed.staged).toEqual([]);
+      expect(parsed.unstaged).toEqual([]);
+      expect(parsed.untracked).toEqual([]);
+    },
+  );
+
   it("preserves truncation as an unknown status condition", () => {
     const parsed = parseGitStatus({ stdout: Buffer.from("## main\0 M file", "utf8"), truncated: true });
     expect(parsed.truncated).toBe(true);
+  });
+
+  it("rejects a non-truncated stream with an incomplete final record", () => {
+    const parsed = parseGitStatus({ stdout: Buffer.from("## main\0 M unfinished", "utf8"), truncated: false });
+    expect(parsed.valid).toBe(false);
+    expect(parsed.staged).toEqual([]);
+    expect(parsed.unstaged).toEqual([]);
   });
 
   it("rejects invalid UTF-8 status and log output rather than replacing bytes", () => {
@@ -27,7 +45,7 @@ describe("Git output parsers", () => {
   it("returns the full multiline commit body", () => {
     const hash = "a".repeat(40);
     const date = "2026-01-02T03:04:05+00:00";
-    const output = Buffer.from(`${hash}\0Author\0${date}\0subject\n\nbody line one\nbody line two\n\0\n`, "utf8");
+    const output = Buffer.from(`\x1e${hash}\0Author\0${date}\0subject\n\nbody line one\nbody line two\n\x1e`, "utf8");
     const parsed = parseGitLog({ stdout: output, truncated: false });
     expect(parsed.commits).toHaveLength(1);
     expect(parsed.commits[0].message).toContain("subject");

@@ -2,10 +2,13 @@ import type { ToolCall } from "../providers/types.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 import type { ApprovalDecision } from "../tools/types.js";
 import type { ProposedFileChange } from "../tools/file-changes.js";
+import type { AttributionReport } from "../tools/change-attribution.js";
 
 export interface AgentCallbacks {
   onText?: (text: string) => void;
   onToolCall?: (call: ToolCall) => void;
+  onToolResult?: (result: ToolExecutionResult) => void;
+  onAttribution?: (report: AttributionReport) => void;
   requestApproval?: (proposal: ProposedFileChange, signal?: AbortSignal) => Promise<ApprovalDecision>;
 }
 
@@ -20,6 +23,7 @@ export interface AgentResult {
   finalText: string;
   iterations: number;
   toolCalls: number;
+  attribution: AttributionReport;
 }
 
 export type ToolCallHandler = (call: ToolCall) => Promise<ToolExecutionResult>;

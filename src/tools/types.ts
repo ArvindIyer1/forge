@@ -3,6 +3,7 @@ import type { ToolDefinition } from "../providers/types.js";
 import type { Workspace } from "./workspace.js";
 import type { ProposedFileChange } from "./file-changes.js";
 import type { GitService } from "../git/git-service.js";
+import type { ChangeAttributionTracker } from "./change-attribution.js";
 
 export type ApprovalDecision = "approved" | "rejected";
 
@@ -11,6 +12,7 @@ export interface ToolContext {
   /** Git service availability is captured at startup; undefined permits lazy initialization in tests/embedders. */
   gitService?: GitService | null;
   gitServiceError?: string;
+  changeAttribution?: ChangeAttributionTracker;
   signal?: AbortSignal;
   requestApproval?: (
     proposal: ProposedFileChange,

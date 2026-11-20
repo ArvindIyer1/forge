@@ -35,7 +35,7 @@ describe("tool registry and executor", () => {
   it("registers workspace and Git tools with provider-neutral definitions", () => {
     const registry = createDefaultToolRegistry();
 
-    expect(registry.size).toBe(10);
+    expect(registry.size).toBe(11);
     expect(registry.definitions().map((definition) => definition.name)).toEqual([
       "list_files",
       "read_file",
@@ -47,6 +47,7 @@ describe("tool registry and executor", () => {
       "git_diff_staged",
       "git_log",
       "git_branch",
+      "get_change_attribution",
     ]);
     expect(registry.definitions()[1].parameters).toMatchObject({ type: "object" });
   });

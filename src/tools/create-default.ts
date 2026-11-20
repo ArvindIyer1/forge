@@ -9,6 +9,7 @@ import { gitDiffTool } from "./git-diff.js";
 import { gitDiffStagedTool } from "./git-diff-staged.js";
 import { gitLogTool } from "./git-log.js";
 import { gitBranchTool } from "./git-branch.js";
+import { getChangeAttributionTool } from "./get-change-attribution.js";
 
 export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
@@ -22,5 +23,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(gitDiffStagedTool);
   registry.register(gitLogTool);
   registry.register(gitBranchTool);
+  registry.register(getChangeAttributionTool);
   return registry;
 }

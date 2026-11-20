@@ -4,6 +4,8 @@ import type { Agent } from "../agent/agent.js";
 import type { ModelProvider } from "../providers/types.js";
 import type { ProposedFileChange } from "../tools/file-changes.js";
 import type { ApprovalDecision } from "../tools/types.js";
+import { renderGitToolResult } from "./git-renderers.js";
+import { escapeTerminalControls } from "./terminal-format.js";
 
 interface TerminalOptions {
   input?: Readable;
@@ -129,6 +131,10 @@ export async function startTerminalChat(
           {
             onText: (text) => output.write(text),
             onToolCall: (call) => output.write(`\n[calling ${call.name}]\n`),
+            onToolResult: (result) => {
+              const rendered = renderGitToolResult(result, (output as Writable & { columns?: number }).columns ?? 80);
+              if (rendered !== null) output.write(rendered);
+            },
             requestApproval,
           },
           controller.signal,
@@ -152,16 +158,4 @@ export async function startTerminalChat(
     terminal.close();
     output.write("Goodbye!\n");
   }
-}
-
-function escapeTerminalControls(text: string): string {
-  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, (character) => {
-    if (character === "\u001b") return "␛";
-    if (character === "\r") return "␍";
-    if (character === "\t") return "⇥";
-    if (character === "\u007f") return "␡";
-    const code = character.charCodeAt(0);
-    if (code <= 0x1f) return String.fromCharCode(0x2400 + code);
-    return `\\u${code.toString(16).padStart(4, "0")}`;
-  });
 }

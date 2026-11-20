@@ -52,6 +52,7 @@ export function parseGitStatus(result: GitCommandResult): ParsedGitStatus {
     untracked: [],
     truncated: result.truncated,
   };
+  if (!result.truncated && !text.endsWith("\0")) parsed.valid = false;
 
   let entries = 0;
   let headers = 0;
@@ -115,15 +116,19 @@ export function parseGitLog(result: GitCommandResult): { commits: GitCommit[]; t
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout); }
   catch { return { commits: [], truncated: true }; }
-  const fields = text.split("\0");
+  // Git inserts an ASCII record separator before every record. Message bodies
+  // may contain newlines and NUL field separators are scoped within each record.
+  const records = text.split("\x1e").filter(Boolean);
   const commits: GitCommit[] = [];
   let truncated = result.truncated;
-  for (let index = 0; index + 3 < fields.length; index += 4) {
-    const hash = fields[index].replace(/^[\r\n]+/, "");
-    const author = fields[index + 1];
-    const date = fields[index + 2];
-    const message = fields[index + 3];
-    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(hash)) continue;
+  for (const record of records) {
+    const fields = record.split("\0");
+    if (fields.length < 4) { truncated = true; continue; }
+    const hash = fields[0].replace(/^[\r\n]+/, "");
+    const author = fields[1];
+    const date = fields[2];
+    const message = fields.slice(3).join("\0").replace(/\n+$/, "");
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(hash)) { truncated = true; continue; }
     commits.push({ hash, author, date, message });
   }
   if (commits.length > 50) {
@@ -169,17 +174,26 @@ function parseBranchHeader(header: string, result: ParsedGitStatus): boolean {
     result.unborn = true;
     const prefix = header.startsWith("No commits yet on ") ? "No commits yet on " : "Initial commit on ";
     result.current_branch = header.slice(prefix.length) || null;
-    return result.current_branch !== null;
+    return result.current_branch !== null && isBranchName(result.current_branch);
   }
+  const detached = /^HEAD \(detached (?:at|from) [^)]+\)$/.exec(header);
+  if (detached) { result.detached = true; return true; }
   const separator = header.indexOf("...");
   const branchPart = separator >= 0 ? header.slice(0, separator) : header;
+  if (!isBranchName(branchPart)) return false;
   result.current_branch = branchPart || null;
   if (separator >= 0) {
-    const upstreamPart = header.slice(separator + 3).replace(/\s+\[[^\]]*\]$/, "");
+    const suffixMatch = /\s+\[(?:ahead \d+(?:, behind \d+)?|behind \d+(?:, ahead \d+)?|gone)\]$/.exec(header.slice(separator + 3));
+    const rawUpstream = header.slice(separator + 3);
+    const upstreamPart = suffixMatch ? rawUpstream.slice(0, suffixMatch.index) : rawUpstream;
     result.upstream = upstreamPart || null;
-    if (!result.upstream) return false;
+    if (!result.upstream || !isBranchName(result.upstream) || (rawUpstream.includes("[") && !suffixMatch)) return false;
   }
   return result.current_branch !== null;
+}
+
+function isBranchName(value: string): boolean {
+  return value.length > 0 && !/[\s\0]/u.test(value) && !value.startsWith("-");
 }
 
 function invalidStatus(truncated: boolean): ParsedGitStatus {

@@ -9,6 +9,7 @@ import type { ModelProvider, ProviderEvent } from "../src/providers/types.js";
 import { ToolRegistry } from "../src/tools/registry.js";
 import { Workspace } from "../src/tools/workspace.js";
 import { writeFileTool } from "../src/tools/write-file.js";
+import { z } from "zod";
 
 const temporaryRoots: string[] = [];
 
@@ -44,6 +45,17 @@ class WriteThenFinishProvider implements ModelProvider {
   formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+class GitStatusProvider implements ModelProvider {
+  readonly id = "gemini" as const;
+  readonly model = "mock-model";
+  private turn = 0;
+  async *streamTurn(): AsyncGenerator<ProviderEvent> {
+    if (this.turn++ === 0) yield { type: "turn_complete", toolCalls: [{ id: "status-1", name: "git_status", arguments: {} }] };
+    else { yield { type: "text_delta", text: "Done." }; yield { type: "turn_complete", toolCalls: [] }; }
+  }
+  formatError(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 }
 
 class CaptureOutput extends Writable {
@@ -143,5 +155,32 @@ describe("terminal file approval", () => {
     await expect(workspace.readTextFile("new.txt")).rejects.toThrow();
     expect(agent.history).toHaveLength(1);
     expect(output.text).toContain("Turn cancelled.");
+  });
+});
+
+describe("terminal Git presentation", () => {
+  it("renders a Git result once while retaining the normal assistant response", async () => {
+    const workspace = await makeWorkspace();
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "git_status", description: "fixture", schema: z.object({}).strict(),
+      execute: async () => ({
+        is_repository: true, state: "clean", current_branch: "main", upstream: null,
+        detached: false, unborn: false, staged: [], unstaged: [], untracked: [], truncated: false,
+      }),
+    });
+    const provider = new GitStatusProvider();
+    const agent = new Agent(provider, registry, { workspace });
+    const input = new PassThrough();
+    const output = new CaptureOutput();
+    const running = startTerminalChat(provider, agent, { input, output });
+    input.write("check status\n");
+    await waitForOutput(output, "Done.");
+    input.write("/exit\n");
+    await running;
+    expect(output.text.match(/Git status/g)).toHaveLength(1);
+    expect(output.text).toContain("State: clean");
+    expect(output.text).toContain("Done.");
+    expect(agent.history.some((message) => message.role === "tool" && message.content.includes("\"state\":\"clean\""))).toBe(true);
   });
 });

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { open, link, rename, unlink } from "node:fs/promises";
+import { open, link, lstat, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { MAX_READ_BYTES, Workspace } from "./workspace.js";
 import { createUnifiedDiff } from "./diff.js";
+import type { AppliedFileEvidence } from "./change-attribution.js";
 
 export type ExpectedFileState =
   | { kind: "missing" }
@@ -120,7 +121,7 @@ export async function applyFileChange(
   workspace: Workspace,
   proposal: ProposedFileChange,
   signal?: AbortSignal,
-): Promise<{ path: string; operation: ProposedFileChange["operation"]; bytesWritten: number }> {
+): Promise<{ path: string; operation: ProposedFileChange["operation"]; bytesWritten: number; evidence: AppliedFileEvidence }> {
   signal?.throwIfAborted();
   const initialTarget = await resolveProposalTarget(workspace, proposal);
   if (!(await isProposalCurrent(workspace, proposal))) {
@@ -136,6 +137,7 @@ export async function applyFileChange(
     await handle.writeFile(proposal.after, { encoding: "utf8" });
     if (proposal.expected.kind === "file") await handle.chmod(proposal.expected.mode & 0o777);
     await handle.sync();
+    const temporaryInfo = await handle.stat();
     await handle.close();
     handle = undefined;
 
@@ -156,10 +158,44 @@ export async function applyFileChange(
       await rename(temporaryPath, initialTarget.absolutePath);
     }
 
+    const expectedHash = hash(proposal.after);
+    let evidence: AppliedFileEvidence = {
+      sha256: expectedHash,
+      size: temporaryInfo.size,
+      device: temporaryInfo.dev,
+      inode: temporaryInfo.ino,
+      modifiedAt: temporaryInfo.mtimeMs,
+      mode: temporaryInfo.mode,
+      verified: false,
+    };
+    try {
+      const published = await workspace.readTextSnapshot(proposal.path);
+      const publishedInfo = await lstat(initialTarget.absolutePath);
+      const contentMatches = published.content === proposal.after;
+      // Compare the actual target identity with the inode written and atomically published.
+      const identityMatches = temporaryInfo.dev !== 0 && temporaryInfo.ino !== 0 &&
+        published.device === temporaryInfo.dev && published.inode === temporaryInfo.ino &&
+        publishedInfo.dev === temporaryInfo.dev && publishedInfo.ino === temporaryInfo.ino;
+      const metadataMatches = published.size === temporaryInfo.size && published.modifiedAt === temporaryInfo.mtimeMs &&
+        published.mode === temporaryInfo.mode;
+      evidence = {
+        sha256: hash(published.content),
+        size: published.size,
+        device: published.device,
+        inode: published.inode,
+        modifiedAt: published.modifiedAt,
+        mode: published.mode,
+        verified: contentMatches && identityMatches && metadataMatches && hash(published.content) === expectedHash,
+      };
+    } catch {
+      // Publication succeeded but final state could not be verified; attribution stays unknown.
+    }
+
     return {
       path: proposal.path,
       operation: proposal.operation,
       bytesWritten: Buffer.byteLength(proposal.after, "utf8"),
+      evidence,
     };
   } finally {
     if (handle) await handle.close().catch(() => undefined);

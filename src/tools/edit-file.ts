@@ -22,6 +22,7 @@ export const editFileTool: Tool<z.infer<typeof argumentsSchema>> = {
     context.signal?.throwIfAborted();
     if (decision !== "approved") return { status: "rejected", path: proposal.path, operation: proposal.operation };
     const applied = await applyFileChange(context.workspace, proposal, context.signal);
-    return { status: "approved", ...applied };
+    context.changeAttribution?.recordApplied(applied.path, applied.operation, applied.evidence, proposal.expected);
+    return { status: "approved", path: applied.path, operation: applied.operation, bytesWritten: applied.bytesWritten };
   },
 };

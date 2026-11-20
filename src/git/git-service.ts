@@ -117,8 +117,12 @@ export class GitService {
     }
 
     const entries = operation === "diff" ? status.unstaged : status.staged;
+    // A worktree diff can compare against a staged rename's new index blob. Include
+    // rename counterparts from both sides so that blob can never be exposed via a
+    // later edit to its public destination.
+    const allEntries = [...status.staged, ...status.unstaged];
     const sensitiveRenamePaths = new Set<string>();
-    for (const entry of entries) {
+    for (const entry of allEntries) {
       if (entry.other_path !== undefined &&
           (isSensitivePath(entry.path) || isSensitivePath(entry.other_path))) {
         sensitiveRenamePaths.add(normalizeGitPath(entry.path));
@@ -126,7 +130,7 @@ export class GitService {
       }
     }
     const sensitiveDeletion = entries.some((entry) => entry.status === "D" && isSensitivePath(entry.path));
-    const sensitiveOmitted = entries.some((entry) =>
+    const sensitiveOmitted = allEntries.some((entry) =>
       isSensitivePath(entry.path) || (entry.other_path !== undefined && isSensitivePath(entry.other_path))) ||
       sensitiveRenamePaths.size > 0;
     const changedCandidates = entries.map((entry) => entry.path);
@@ -244,7 +248,7 @@ function buildArgs(operation: GitReadOperation, options: { path?: string; paths?
     case "log": {
       const limit = options.limit ?? 10;
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error("Git log limit must be between 1 and 50.");
-      return [...isolation, "--no-pager", "log", `-${limit}`, "--format=%H%x00%an%x00%aI%x00%B%x00"];
+      return [...isolation, "--no-pager", "log", `-${limit}`, "--format=%x1e%H%x00%an%x00%aI%x00%B"];
     }
     case "branches": return [...isolation, "--no-pager", "branch", "--list", "--format=%(HEAD)%00%(refname:short)%00"];
   }

@@ -364,6 +364,7 @@ describe("read-only Git tools", () => {
     expect(result.result.staged).toEqual([]);
   });
 
+  // Windows forbids these filename bytes; Linux runs this regression using Buffer paths.
   it.runIf(process.platform === "linux")("marks status unknown and withholds diffs for invalid UTF-8 filenames", async () => {
     const root = await temp();
     await git(root, ["init", "-q", "-b", "main"]);
